@@ -12,18 +12,19 @@ import traceback
 from typing import List, Dict, Any
 import uvicorn
 import logging
+from huggingface_hub import hf_hub_download
+import os
 
 # Configuration du logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # =======================
-# Configuration des fichiers Google Drive
+# Configuration des fichiers
 # =======================
-files = {
-    "embedding.npy": "176y-qT1aYgry5m6hT2dRyEV4J-CcOlKj",
-    "jobs_catalogue2.json": "1gzZCk3mtDXp8Y_siloYpCOJiJVCHY663"
-}
+
+
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 # =======================
 # Application FastAPI
@@ -74,33 +75,40 @@ class DataStore:
         self.offers_emb = None
         self.data_loaded = False
 
-
     def load_data(self):
-        """Charge les données une seule fois"""
         if self.data_loaded:
             return True
 
         try:
-            if not download_files():
-                logger.error("❌ Impossible de télécharger les fichiers nécessaires")
-                return False
+            logger.info("📥 Téléchargement depuis Hugging Face...")
+
+            embedding_path = hf_hub_download(
+                repo_id="ton-username/recrutobot-data",
+                filename="embedding.npy",
+                token=HF_TOKEN
+            )
+            offers_path = hf_hub_download(
+                repo_id="ton-username/recrutobot-data",
+                filename="jobs_catalogue2.json",
+                token=HF_TOKEN
+            )
 
             logger.info("Chargement des embeddings...")
-            embedding = np.load("embedding.npy", allow_pickle=True)
-            self.offers_emb = torch.tensor(embedding.astype(np.float32))  # Utilisation de float32 pour plus de stabilité
+            embedding = np.load(embedding_path, allow_pickle=True)
+            self.offers_emb = torch.tensor(embedding.astype(np.float32))
 
             logger.info("🤖 Chargement du modèle...")
             self.model = SentenceTransformer("all-mpnet-base-v2", device="cpu")
 
             logger.info("📋 Chargement des offres d'emploi...")
-            self.offers = import_json("jobs_catalogue2.json")
+            self.offers = import_json(offers_path)
 
             self.data_loaded = True
             logger.info(f"📈 {len(self.offers)} offres chargées")
             return True
 
         except Exception as e:
-            logger.error(f"❌ Erreur lors du chargement des données: {str(e)}")
+            logger.error(f"❌ Erreur lors du chargement: {e}")
             logger.error(traceback.format_exc())
             return False
 
