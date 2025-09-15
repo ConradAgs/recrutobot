@@ -51,13 +51,18 @@ def download_files():
         if not os.path.exists(filename):
             try:
                 logger.info(f"Téléchargement de {filename}...")
-                url = f"https://drive.google.com/uc?export=download&id={file_id}"
-                gdown.download(url, filename, quiet=False)
+                url = f"https://drive.google.com/uc?id={file_id}"
+                output = gdown.download(url, filename, quiet=False)
+
+                if not output or not os.path.exists(filename) or os.path.getsize(filename) < 1000:
+                    raise RuntimeError(f"{filename} n'a pas été téléchargé correctement")
+
                 logger.info(f"{filename} téléchargé avec succès")
             except Exception as e:
                 logger.error(f"❌ Erreur avec {filename}: {e}")
                 return False
     return True
+
 
 # =======================
 # Initialisation des données
@@ -68,6 +73,7 @@ class DataStore:
         self.offers = []
         self.offers_emb = None
         self.data_loaded = False
+
 
     def load_data(self):
         """Charge les données une seule fois"""
