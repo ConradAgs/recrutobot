@@ -193,3 +193,14 @@ async def health_check():
 async def head_root():
     return {}
 
+# =======================
+# Point d'entrée pour l'exécution locale
+# =======================
+if __name__ == "__main__":
+    # Charger les données au démarrage
+    data_store.load_data()
+    
+    # Démarrer le serveur avec le port de Render
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
