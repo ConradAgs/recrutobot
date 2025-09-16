@@ -83,7 +83,7 @@ class DataStore:
             logger.info("📥 Téléchargement depuis Hugging Face...")
 
             embedding_path = hf_hub_download(
-                repo_id="ton-username/recrutobot-data",
+                repo_id="ConradAgs/recrutobot-data",
                 filename="embedding.npy",
                 token=HF_TOKEN
             )
