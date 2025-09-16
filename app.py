@@ -190,12 +190,3 @@ async def health_check():
         "offers_count": len(data_store.offers) if data_store.data_loaded else 0
     })
 
-# =======================
-# Point d'entrée
-# =======================
-if __name__ == "__main__":
-    # Charger les données au démarrage
-    data_store.load_data()
-
-    # Démarrer le serveur
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
