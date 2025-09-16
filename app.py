@@ -7,13 +7,12 @@ import torch
 import numpy as np
 from sentence_transformers import SentenceTransformer, util
 import os
-import gdown
 import traceback
-from typing import List, Dict, Any
 import uvicorn
 import logging
 from huggingface_hub import hf_hub_download
-import os
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 # Configuration du logging
 logging.basicConfig(level=logging.INFO)
@@ -22,8 +21,6 @@ logger = logging.getLogger(__name__)
 # =======================
 # Configuration des fichiers
 # =======================
-
-
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 # =======================
@@ -55,27 +52,44 @@ class DataStore:
         self.offers = []
         self.offers_emb = None
         self.data_loaded = False
+        self.data_loading = False
 
-    def load_data(self):
-        if self.data_loaded:
+    async def load_data(self):
+        """Charge les données de façon asynchrone"""
+        if self.data_loaded or self.data_loading:
             return True
-    
+            
+        self.data_loading = True
+        logger.info("📥 Début du téléchargement depuis Hugging Face...")
+        
         try:
-            logger.info("📥 Téléchargement depuis Hugging Face...")
-    
-            embedding_path = hf_hub_download(
-                repo_id="ConradAgs/recrutobot-data",
-                filename="embedding.npy",
-                token=HF_TOKEN,
-                repo_type="dataset"  # ⚠️ très important
-            )
-    
-            offers_path = hf_hub_download(
-                repo_id="ConradAgs/recrutobot-data",
-                filename="jobs_catalogue2.json",
-                token=HF_TOKEN,
-                repo_type="dataset"
-            )
+            # Télécharger les fichiers en parallèle avec ThreadPoolExecutor
+            with ThreadPoolExecutor() as executor:
+                loop = asyncio.get_event_loop()
+                
+                # Tâches pour télécharger les fichiers
+                embedding_task = loop.run_in_executor(
+                    executor, 
+                    lambda: hf_hub_download(
+                        repo_id="ConradAgs/recrutobot-data",
+                        filename="embedding.npy",
+                        token=HF_TOKEN,
+                        repo_type="dataset"
+                    )
+                )
+                
+                offers_task = loop.run_in_executor(
+                    executor,
+                    lambda: hf_hub_download(
+                        repo_id="ConradAgs/recrutobot-data",
+                        filename="jobs_catalogue2.json",
+                        token=HF_TOKEN,
+                        repo_type="dataset"
+                    )
+                )
+                
+                # Attendre que les deux téléchargements soient terminés
+                embedding_path, offers_path = await asyncio.gather(embedding_task, offers_task)
     
             logger.info("Chargement des embeddings...")
             embedding = np.load(embedding_path, allow_pickle=True)
@@ -89,14 +103,15 @@ class DataStore:
                 self.offers = json.load(f)
     
             self.data_loaded = True
+            self.data_loading = False
             logger.info(f"📈 {len(self.offers)} offres chargées")
             return True
-    
+            
         except Exception as e:
             logger.error(f"❌ Erreur lors du chargement: {str(e)}")
             logger.error(traceback.format_exc())
+            self.data_loading = False
             return False
-
 
 # Instance globale pour stocker les données
 data_store = DataStore()
@@ -107,21 +122,31 @@ data_store = DataStore()
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     """Page d'accueil avec l'interface de recherche"""
-    # Charger les données au premier accès
-    if not data_store.data_loaded:
-        data_store.load_data()
-
+    # Démarrer le chargement des données en arrière-plan si ce n'est pas déjà fait
+    if not data_store.data_loaded and not data_store.data_loading:
+        asyncio.create_task(data_store.load_data())
+    
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/api/search")
 async def search_offers(request: Request):
     """Endpoint pour effectuer une recherche d'offres"""
     try:
+        # Vérifier si les données sont en cours de chargement
+        if data_store.data_loading:
+            return JSONResponse({
+                "results": [],
+                "message": "⚠️ Les données sont en cours de chargement, veuillez réessayer dans quelques secondes...",
+                "count": 0,
+                "search_term": ""
+            })
+        
         # Charger les données si nécessaire
         if not data_store.data_loaded:
-            if not data_store.load_data():
+            success = await data_store.load_data()
+            if not success:
                 raise HTTPException(status_code=500, detail="Erreur lors du chargement des données")
-
+        
         # Récupérer la requête de recherche
         data = await request.json()
         prompt = data.get("prompt", "")
@@ -137,7 +162,7 @@ async def search_offers(request: Request):
             raise HTTPException(status_code=500, detail="Embeddings non chargés")
 
         cos_scores = util.cos_sim(query_emb, data_store.offers_emb)[0]
-        good_indices = [i for i, score in enumerate(cos_scores) if score > 0.3]  # Seuil réduit à 0.3
+        good_indices = [i for i, score in enumerate(cos_scores) if score > 0.3]
 
         if not good_indices:
             return JSONResponse({
@@ -187,20 +212,26 @@ async def health_check():
     return JSONResponse({
         "status": "ok",
         "data_loaded": data_store.data_loaded,
+        "data_loading": data_store.data_loading,
         "offers_count": len(data_store.offers) if data_store.data_loaded else 0
     })
+
+@app.get("/status")
+async def status():
+    """Endpoint pour vérifier l'état du chargement"""
+    return {
+        "data_loaded": data_store.data_loaded,
+        "data_loading": data_store.data_loading,
+        "offers_count": len(data_store.offers) if data_store.data_loaded else 0
+    }
+
 @app.head("/")
 async def head_root():
     return {}
 
 # =======================
-# Point d'entrée pour l'exécution locale
+# Point d'entrée pour Render
 # =======================
 if __name__ == "__main__":
-    # Charger les données au démarrage
-    data_store.load_data()
-    
-    # Démarrer le serveur avec le port de Render
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
