@@ -88,7 +88,7 @@ class DataStore:
                 token=HF_TOKEN
             )
             offers_path = hf_hub_download(
-                repo_id="ton-username/recrutobot-data",
+                repo_id="ConradAgs/recrutobot-data",
                 filename="jobs_catalogue2.json",
                 token=HF_TOKEN
             )
