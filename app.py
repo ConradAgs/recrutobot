@@ -189,4 +189,7 @@ async def health_check():
         "data_loaded": data_store.data_loaded,
         "offers_count": len(data_store.offers) if data_store.data_loaded else 0
     })
+@app.head("/")
+async def head_root():
+    return {}
 
