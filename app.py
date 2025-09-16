@@ -46,25 +46,6 @@ def import_json(json_path):
     with open(json_path, "r", encoding="utf-8") as fp:
         return json.load(fp)
 
-def download_files():
-    """Télécharge les fichiers depuis Google Drive si absents"""
-    for filename, file_id in files.items():
-        if not os.path.exists(filename):
-            try:
-                logger.info(f"Téléchargement de {filename}...")
-                url = f"https://drive.google.com/uc?id={file_id}"
-                output = gdown.download(url, filename, quiet=False)
-
-                if not output or not os.path.exists(filename) or os.path.getsize(filename) < 1000:
-                    raise RuntimeError(f"{filename} n'a pas été téléchargé correctement")
-
-                logger.info(f"{filename} téléchargé avec succès")
-            except Exception as e:
-                logger.error(f"❌ Erreur avec {filename}: {e}")
-                return False
-    return True
-
-
 # =======================
 # Initialisation des données
 # =======================
