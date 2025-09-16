@@ -59,39 +59,44 @@ class DataStore:
     def load_data(self):
         if self.data_loaded:
             return True
-
+    
         try:
             logger.info("📥 Téléchargement depuis Hugging Face...")
-
+    
             embedding_path = hf_hub_download(
                 repo_id="ConradAgs/recrutobot-data",
                 filename="embedding.npy",
-                token=HF_TOKEN
+                token=HF_TOKEN,
+                repo_type="dataset"  # ⚠️ très important
             )
+    
             offers_path = hf_hub_download(
                 repo_id="ConradAgs/recrutobot-data",
                 filename="jobs_catalogue2.json",
-                token=HF_TOKEN
+                token=HF_TOKEN,
+                repo_type="dataset"
             )
-
+    
             logger.info("Chargement des embeddings...")
             embedding = np.load(embedding_path, allow_pickle=True)
             self.offers_emb = torch.tensor(embedding.astype(np.float32))
-
+    
             logger.info("🤖 Chargement du modèle...")
             self.model = SentenceTransformer("all-mpnet-base-v2", device="cpu")
-
+    
             logger.info("📋 Chargement des offres d'emploi...")
-            self.offers = import_json(offers_path)
-
+            with open(offers_path, "r", encoding="utf-8") as f:
+                self.offers = json.load(f)
+    
             self.data_loaded = True
             logger.info(f"📈 {len(self.offers)} offres chargées")
             return True
-
+    
         except Exception as e:
-            logger.error(f"❌ Erreur lors du chargement: {e}")
+            logger.error(f"❌ Erreur lors du chargement: {str(e)}")
             logger.error(traceback.format_exc())
             return False
+
 
 # Instance globale pour stocker les données
 data_store = DataStore()
