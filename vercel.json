@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/app.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "api/app.py"
+    }
+  ],
+  "functions": {
+    "api/app.py": {
+      "maxDuration": 60,
+      "memory": 3008
+    }
+  },
+  "env": {
+    "PYTHONPATH": "/var/task"
+  }
+}
