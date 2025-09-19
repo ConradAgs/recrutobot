@@ -77,24 +77,33 @@ def download_files():
 # =======================
 # Hugging Face embeddings
 # =======================
-def get_embedding(prompt: str):
-    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-    payload = {"inputs": prompt}
+def get_embedding(text: str):
+    """
+    Génère un embedding en utilisant l'API Inference de Hugging Face
+    """
     try:
-        response = requests.post(
-            f"https://api-inference.huggingface.co/models/{HF_MODEL}",
-            headers=headers,
-            json=payload,
-            timeout=30
+        # Initialiser le client Inference
+        client = InferenceClient(token=HF_API_TOKEN)
+        
+        # Utiliser l'endpoint de feature extraction pour les embeddings
+        embeddings = client.feature_extraction(
+            text,
+            model="sentence-transformers/all-mpnet-base-v2"
         )
-        response.raise_for_status()
-        emb = np.array(response.json(), dtype=np.float32)
+        
+        # Convertir en numpy array
+        emb = np.array(embeddings, dtype=np.float32)
+        
+        # Ajuster les dimensions si nécessaire
         if emb.ndim == 2:
-            emb = emb[0]
+            emb = emb[0]  # Prendre le premier embedding si batch
+            
+        print(f"✅ Embedding généré - Shape: {emb.shape}")
         return emb
+        
     except Exception as e:
-        logger.error(f"❌ Erreur Hugging Face: {e}")
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la génération d'embeddings: {e}")
+        print(f"❌ Erreur avec l'API Inference: {e}")
+        raise
 
 
 # =======================
@@ -209,4 +218,5 @@ async def health_check():
         "data_loaded": data_store.data_loaded,
         "offers_count": len(data_store.offers) if data_store.data_loaded else 0
     })
+
 
