@@ -2,16 +2,16 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 import json
-import torch
 import numpy as np
-from sentence_transformers import SentenceTransformer, util
 import os
 import traceback
 import logging
 import requests
 from pathlib import Path
 
+# =======================
 # Configuration du logging
+# =======================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -24,11 +24,16 @@ files = {
 }
 
 # =======================
+# Clé et modèle Hugging Face
+# =======================
+HF_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
+HF_MODEL = "sentence-transformers/all-mpnet-base-v2"
+
+# =======================
 # Application FastAPI
 # =======================
 app = FastAPI(title="RecrutoBot", description="Version sur Vercel")
 
-# Chemin des templates
 templates_path = Path(__file__).parent.parent / "templates"
 templates = Jinja2Templates(directory=str(templates_path))
 
@@ -47,46 +52,55 @@ def download_files():
             if not file_path.exists():
                 try:
                     logger.info(f"Téléchargement de {filename}...")
-                    
-                    # URL Google Drive
                     url = f"https://drive.google.com/uc?export=download&id={file_id}"
-                    
-                    # Téléchargement avec requests
                     session = requests.Session()
                     response = session.get(url, stream=True)
-                    
-                    # Gestion de la confirmation pour les gros fichiers
                     for key, value in response.cookies.items():
                         if key.startswith('download_warning'):
                             url = f"https://drive.google.com/uc?export=download&confirm={value}&id={file_id}"
                             response = session.get(url, stream=True)
                             break
-                    
                     response.raise_for_status()
-                    
-                    # Écriture du fichier
                     with open(filename, 'wb') as f:
                         for chunk in response.iter_content(chunk_size=8192):
                             if chunk:
                                 f.write(chunk)
-                    
                     logger.info(f"{filename} téléchargé avec succès")
-                    
                 except Exception as e:
                     logger.error(f"❌ Erreur avec {filename}: {e}")
                     return False
         return True
-        
     except Exception as e:
         logger.error(f"❌ Erreur lors du téléchargement: {e}")
         return False
+
+# =======================
+# Hugging Face embeddings
+# =======================
+def get_embedding(prompt: str):
+    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+    payload = {"inputs": prompt}
+    try:
+        response = requests.post(
+            f"https://api-inference.huggingface.co/pipeline/feature-extraction/{HF_MODEL}",
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        response.raise_for_status()
+        emb = np.array(response.json(), dtype=np.float32)
+        if emb.ndim == 2:
+            emb = emb[0]
+        return emb
+    except Exception as e:
+        logger.error(f"❌ Erreur Hugging Face: {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la génération d'embeddings: {e}")
 
 # =======================
 # DataStore
 # =======================
 class DataStore:
     def __init__(self):
-        self.model = None
         self.offers = []
         self.offers_emb = None
         self.data_loaded = False
@@ -94,18 +108,13 @@ class DataStore:
     def load_data(self):
         if self.data_loaded:
             return True
-            
         try:
             if not download_files():
                 logger.error("❌ Impossible de télécharger les fichiers nécessaires")
                 return False
 
             logger.info("📥 Chargement des embeddings...")
-            embedding = np.load("embedding.npy", allow_pickle=True)
-            self.offers_emb = torch.tensor(embedding.astype(np.float32))
-
-            logger.info("🤖 Chargement du modèle...")
-            self.model = SentenceTransformer("all-mpnet-base-v2", device="cpu")
+            self.offers_emb = np.load("embedding.npy", allow_pickle=True).astype(np.float32)
 
             logger.info("📋 Chargement des offres d'emploi...")
             self.offers = import_json("jobs_catalogue2.json")
@@ -119,7 +128,6 @@ class DataStore:
             logger.error(traceback.format_exc())
             return False
 
-# Instance globale
 data_store = DataStore()
 
 # =======================
@@ -127,14 +135,12 @@ data_store = DataStore()
 # =======================
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-    """Page d'accueil"""
     if not data_store.data_loaded:
         data_store.load_data()
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/api/search")
 async def search_offers(request: Request):
-    """Endpoint pour effectuer une recherche d'offres"""
     try:
         if not data_store.data_loaded and not data_store.load_data():
             raise HTTPException(status_code=500, detail="Erreur lors du chargement des données")
@@ -144,11 +150,16 @@ async def search_offers(request: Request):
         if not prompt:
             raise HTTPException(status_code=400, detail="Requête vide")
 
-        query_emb = data_store.model.encode(prompt, convert_to_tensor=True)
+        query_emb = get_embedding(prompt)
+
         if data_store.offers_emb is None:
             raise HTTPException(status_code=500, detail="Embeddings non chargés")
 
-        cos_scores = util.cos_sim(query_emb, data_store.offers_emb)[0]
+        # Calcul des similitudes cosinus
+        cos_scores = np.dot(data_store.offers_emb, query_emb) / (
+            np.linalg.norm(data_store.offers_emb, axis=1) * np.linalg.norm(query_emb)
+        )
+
         good_indices = [i for i, score in enumerate(cos_scores) if score > 0.3]
 
         if not good_indices:
@@ -161,7 +172,7 @@ async def search_offers(request: Request):
 
         results = []
         for i in good_indices:
-            score = cos_scores[i]
+            score = float(cos_scores[i])
             offer = data_store.offers[i]
             results.append({
                 "id": offer.get("id"),
@@ -174,7 +185,7 @@ async def search_offers(request: Request):
                 "salaire": offer.get("salaire"),
                 "entreprise": offer.get("entreprise"),
                 "origineOffre": offer.get("origineOffre"),
-                "score": float(score)
+                "score": score
             })
 
         results.sort(key=lambda x: x["score"], reverse=True)
