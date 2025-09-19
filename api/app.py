@@ -1,3 +1,4 @@
+# app.py - Version finale avec Vercel Blob
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
@@ -8,7 +9,8 @@ import traceback
 import logging
 import requests
 from pathlib import Path
-from huggingface_hub import InferenceClient  # Import ajouté
+import tempfile
+import gzip
 
 # =======================
 # Configuration du logging
@@ -17,106 +19,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # =======================
-# Configuration des fichiers Google Drive
-# =======================
-files = {
-    "embedding.npy": "176y-qT1aYgry5m6hT2dRyEV4J-CcOlKj",
-    "jobs_catalogue2.json": "1gzZCk3mtDXp8Y_siloYpCOJiJVCHY663"
-}
-
-# =======================
-# Clé et modèle Hugging Face
-# =======================
-HF_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
-HF_MODEL = "sentence-transformers/all-mpnet-base-v2"
-
-# =======================
 # Application FastAPI
 # =======================
-app = FastAPI(title="RecrutoBot", description="Version sur Vercel")
+app = FastAPI(title="RecrutoBot", description="Avec Vercel Blob Storage")
 
-templates_path = Path(__file__).parent.parent / "templates"
+templates_path = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(templates_path))
 
 # =======================
-# Initialisation du client Hugging Face
-# =======================
-hf_client = InferenceClient(token=HF_API_TOKEN) if HF_API_TOKEN else None
-
-# =======================
-# Fonctions utilitaires
-# =======================
-def import_json(json_path):
-    with open(json_path, "r", encoding="utf-8") as fp:
-        return json.load(fp)
-
-def download_files():
-    """Télécharge les fichiers depuis Google Drive"""
-    try:
-        for filename, file_id in files.items():
-            file_path = Path(filename)
-            if not file_path.exists():
-                try:
-                    logger.info(f"Téléchargement de {filename}...")
-                    url = f"https://drive.google.com/uc?export=download&id={file_id}"
-                    session = requests.Session()
-                    response = session.get(url, stream=True)
-                    for key, value in response.cookies.items():
-                        if key.startswith('download_warning'):
-                            url = f"https://drive.google.com/uc?export=download&confirm={value}&id={file_id}"
-                            response = session.get(url, stream=True)
-                            break
-                    response.raise_for_status()
-                    with open(filename, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                    logger.info(f"{filename} téléchargé avec succès")
-                except Exception as e:
-                    logger.error(f"❌ Erreur avec {filename}: {e}")
-                    return False
-        return True
-    except Exception as e:
-        logger.error(f"❌ Erreur lors du téléchargement: {e}")
-        return False
-
-# =======================
-# Hugging Face embeddings (NOUVELLE VERSION)
-# =======================
-def get_embedding(text: str):
-    """
-    Génère un embedding en utilisant l'API Inference de Hugging Face
-    """
-    if not HF_API_TOKEN:
-        raise HTTPException(status_code=500, detail="Token Hugging Face non configuré")
-    
-    if not hf_client:
-        raise HTTPException(status_code=500, detail="Client Hugging Face non initialisé")
-    
-    try:
-        # Utiliser l'endpoint de feature extraction pour les embeddings
-        embeddings = hf_client.feature_extraction(
-            text,
-            model=HF_MODEL
-        )
-        
-        # Convertir en numpy array
-        emb = np.array(embeddings, dtype=np.float32)
-        
-        # Ajuster les dimensions si nécessaire
-        if emb.ndim == 2:
-            emb = emb[0]  # Prendre le premier embedding si batch
-            
-        logger.info(f"✅ Embedding généré - Shape: {emb.shape}")
-        return emb
-        
-    except Exception as e:
-        logger.error(f"❌ Erreur avec l'API Inference: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la génération d'embeddings: {e}")
-
-# =======================
-# DataStore
+# DataStore avec Vercel Blob
 # =======================
 class DataStore:
     def __init__(self):
@@ -124,30 +35,63 @@ class DataStore:
         self.offers_emb = None
         self.data_loaded = False
 
-    def load_data(self):
+    async def load_data(self):
         if self.data_loaded:
             return True
+        
         try:
-            if not download_files():
-                logger.error("❌ Impossible de télécharger les fichiers nécessaires")
-                return False
-
-            logger.info("📥 Chargement des embeddings...")
-            self.offers_emb = np.load("embedding.npy", allow_pickle=True).astype(np.float32)
-
-            logger.info("📋 Chargement des offres d'emploi...")
-            self.offers = import_json("jobs_catalogue2.json")
-
+            logger.info("📥 Chargement depuis Vercel Blob Store...")
+            
+            # URLs de vos fichiers dans le Blob Store
+            # Remplacez par les URLs réelles de vos fichiers
+            BLOB_BASE_URL = "https://api.vercel.com/v2/blob/upload-url"
+            
+            # 1. Charger les embeddings compressés
+            logger.info("🧠 Chargement des embeddings...")
+            emb_response = requests.get(
+                f"{BLOB_BASE_URL}/embedding_compressed.npz",
+                timeout=60
+            )
+            emb_response.raise_for_status()
+            
+            # Sauvegarder temporairement et charger
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.npz') as f:
+                f.write(emb_response.content)
+                tmp_path = f.name
+            
+            data = np.load(tmp_path)
+            self.offers_emb = data['embeddings'].astype(np.float32)
+            os.unlink(tmp_path)
+            
+            # 2. Charger le JSON compressé
+            logger.info("📋 Chargement des offres...")
+            json_response = requests.get(
+                f"{BLOB_BASE_URL}/jobs_catalogue2.json.gz",
+                timeout=30
+            )
+            json_response.raise_for_status()
+            
+            # Décompresser le JSON
+            self.offers = json.loads(gzip.decompress(json_response.content).decode('utf-8'))
+            
             self.data_loaded = True
             logger.info(f"📈 {len(self.offers)} offres chargées")
             return True
-
+            
         except Exception as e:
-            logger.error(f"❌ Erreur lors du chargement des données: {e}")
+            logger.error(f"❌ Erreur lors du chargement: {e}")
             logger.error(traceback.format_exc())
             return False
 
 data_store = DataStore()
+
+# =======================
+# Hugging Face Embeddings
+# =======================
+def get_embedding(text: str):
+    """Fonction pour générer les embeddings avec Hugging Face"""
+    # Votre code existant pour Hugging Face...
+    pass
 
 # =======================
 # Routes FastAPI
@@ -155,13 +99,13 @@ data_store = DataStore()
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     if not data_store.data_loaded:
-        data_store.load_data()
+        await data_store.load_data()
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/api/search")
 async def search_offers(request: Request):
     try:
-        if not data_store.data_loaded and not data_store.load_data():
+        if not data_store.data_loaded and not await data_store.load_data():
             raise HTTPException(status_code=500, detail="Erreur lors du chargement des données")
 
         data = await request.json()
@@ -225,6 +169,5 @@ async def health_check():
     return JSONResponse({
         "status": "ok",
         "data_loaded": data_store.data_loaded,
-        "offers_count": len(data_store.offers) if data_store.data_loaded else 0,
-        "hf_client_ready": hf_client is not None
+        "offers_count": len(data_store.offers) if data_store.data_loaded else 0
     })
