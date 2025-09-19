@@ -8,6 +8,7 @@ import traceback
 import logging
 import requests
 from pathlib import Path
+from huggingface_hub import InferenceClient  # Import ajouté
 
 # =======================
 # Configuration du logging
@@ -36,6 +37,11 @@ app = FastAPI(title="RecrutoBot", description="Version sur Vercel")
 
 templates_path = Path(__file__).parent.parent / "templates"
 templates = Jinja2Templates(directory=str(templates_path))
+
+# =======================
+# Initialisation du client Hugging Face
+# =======================
+hf_client = InferenceClient(token=HF_API_TOKEN) if HF_API_TOKEN else None
 
 # =======================
 # Fonctions utilitaires
@@ -75,20 +81,23 @@ def download_files():
         return False
 
 # =======================
-# Hugging Face embeddings
+# Hugging Face embeddings (NOUVELLE VERSION)
 # =======================
 def get_embedding(text: str):
     """
     Génère un embedding en utilisant l'API Inference de Hugging Face
     """
+    if not HF_API_TOKEN:
+        raise HTTPException(status_code=500, detail="Token Hugging Face non configuré")
+    
+    if not hf_client:
+        raise HTTPException(status_code=500, detail="Client Hugging Face non initialisé")
+    
     try:
-        # Initialiser le client Inference
-        client = InferenceClient(token=HF_API_TOKEN)
-        
         # Utiliser l'endpoint de feature extraction pour les embeddings
-        embeddings = client.feature_extraction(
+        embeddings = hf_client.feature_extraction(
             text,
-            model="sentence-transformers/all-mpnet-base-v2"
+            model=HF_MODEL
         )
         
         # Convertir en numpy array
@@ -98,13 +107,13 @@ def get_embedding(text: str):
         if emb.ndim == 2:
             emb = emb[0]  # Prendre le premier embedding si batch
             
-        print(f"✅ Embedding généré - Shape: {emb.shape}")
+        logger.info(f"✅ Embedding généré - Shape: {emb.shape}")
         return emb
         
     except Exception as e:
-        print(f"❌ Erreur avec l'API Inference: {e}")
-        raise
-
+        logger.error(f"❌ Erreur avec l'API Inference: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la génération d'embeddings: {e}")
 
 # =======================
 # DataStore
@@ -216,7 +225,6 @@ async def health_check():
     return JSONResponse({
         "status": "ok",
         "data_loaded": data_store.data_loaded,
-        "offers_count": len(data_store.offers) if data_store.data_loaded else 0
+        "offers_count": len(data_store.offers) if data_store.data_loaded else 0,
+        "hf_client_ready": hf_client is not None
     })
-
-
