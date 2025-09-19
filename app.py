@@ -124,44 +124,46 @@ class DataStore:
         self.offers_emb = None
         self.data_loaded = False
 
-    def load_data(self):
+    async def load_data(self):
         if self.data_loaded:
             return True
+        
         try:
-            if not download_files():
-                logger.error("❌ Impossible de télécharger les fichiers nécessaires")
-                return False
-
-            logger.info("📥 Chargement des embeddings...")
-            self.offers_emb = np.load("embedding.npy", allow_pickle=True).astype(np.float32)
-
-            logger.info("📋 Chargement des offres d'emploi...")
-            self.offers = import_json("jobs_catalogue2.json")
-
+            # Télécharger depuis Vercel Blob
+            print("📥 Téléchargement des données depuis Vercel Blob...")
+            
+            # Embeddings
+            embedding_blob = await get("embedding.npy")
+            self.offers_emb = np.frombuffer(embedding_blob, dtype=np.float32)
+            # Si vos embeddings ont une shape spécifique, reshapez-les :
+            # self.offers_emb = self.offers_emb.reshape((nombre_offres, dimension_embedding))
+            
+            # Offres d'emploi
+            offers_blob = await get("jobs_catalogue2.json")
+            self.offers = json.loads(offers_blob.decode('utf-8'))
+            
             self.data_loaded = True
             logger.info(f"📈 {len(self.offers)} offres chargées")
             return True
-
+            
         except Exception as e:
-            logger.error(f"❌ Erreur lors du chargement des données: {e}")
+            logger.error(f"❌ Erreur lors du chargement depuis Blob: {e}")
             logger.error(traceback.format_exc())
             return False
 
-data_store = DataStore()
-
 # =======================
-# Routes FastAPI
+# Modifiez vos routes pour être async
 # =======================
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     if not data_store.data_loaded:
-        data_store.load_data()
+        await data_store.load_data()  # Notez le await
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/api/search")
 async def search_offers(request: Request):
     try:
-        if not data_store.data_loaded and not data_store.load_data():
+        if not data_store.data_loaded and not await data_store.load_data():  # await ici
             raise HTTPException(status_code=500, detail="Erreur lors du chargement des données")
 
         data = await request.json()
@@ -228,3 +230,4 @@ async def health_check():
         "offers_count": len(data_store.offers) if data_store.data_loaded else 0,
         "hf_client_ready": hf_client is not None
     })
+
