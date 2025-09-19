@@ -82,7 +82,7 @@ def get_embedding(prompt: str):
     payload = {"inputs": prompt}
     try:
         response = requests.post(
-            f"https://api-inference.huggingface.co/pipeline/feature-extraction/{HF_MODEL}",
+            f"https://api-inference.huggingface.co/models/{HF_MODEL}",
             headers=headers,
             json=payload,
             timeout=30
@@ -95,6 +95,7 @@ def get_embedding(prompt: str):
     except Exception as e:
         logger.error(f"❌ Erreur Hugging Face: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur lors de la génération d'embeddings: {e}")
+
 
 # =======================
 # DataStore
@@ -208,3 +209,4 @@ async def health_check():
         "data_loaded": data_store.data_loaded,
         "offers_count": len(data_store.offers) if data_store.data_loaded else 0
     })
+
