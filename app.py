@@ -29,6 +29,12 @@ templates = Jinja2Templates(directory=str(templates_path))
 # =======================
 # DataStore avec Vercel Blob
 # =======================
+# === CONFIGURATION BLOB STORE ===
+BLOB_FILE_URLS = {
+    "embeddings": "https://a76pgx7uu8agygvt.public.blob.vercel-storage.com/embedding_compressed.npz",
+    "offers": "https://a76pgx7uu8agygvt.public.blob.vercel-storage.com/jobs_catalogue2.json.gz"
+}
+
 class DataStore:
     def __init__(self):
         self.offers = []
@@ -42,71 +48,75 @@ class DataStore:
         try:
             logger.info("📥 Chargement depuis Vercel Blob Store...")
             
-            # URLs de vos fichiers dans le Blob Store
-            # Remplacez par les URLs réelles de vos fichiers
-            BLOB_BASE_URL = "https://api.vercel.com/v2/blob/upload-url"
-            
             # 1. Charger les embeddings compressés
             logger.info("🧠 Chargement des embeddings...")
             emb_response = requests.get(
-                f"{BLOB_BASE_URL}/embedding_compressed.npz",
-                timeout=60
+                BLOB_FILE_URLS["embeddings"],
+                timeout=120  # Timeout plus long pour gros fichier
             )
             emb_response.raise_for_status()
+            logger.info("✅ Embeddings téléchargés")
             
             # Sauvegarder temporairement et charger
             with tempfile.NamedTemporaryFile(delete=False, suffix='.npz') as f:
                 f.write(emb_response.content)
                 tmp_path = f.name
             
+            # Charger le fichier NPZ
             data = np.load(tmp_path)
             self.offers_emb = data['embeddings'].astype(np.float32)
             os.unlink(tmp_path)
+            logger.info(f"✅ Embeddings chargés: shape {self.offers_emb.shape}")
             
             # 2. Charger le JSON compressé
             logger.info("📋 Chargement des offres...")
             json_response = requests.get(
-                f"{BLOB_BASE_URL}/jobs_catalogue2.json.gz",
-                timeout=30
+                BLOB_FILE_URLS["offers"],
+                timeout=60
             )
             json_response.raise_for_status()
+            logger.info("✅ JSON téléchargé")
             
             # Décompresser le JSON
             self.offers = json.loads(gzip.decompress(json_response.content).decode('utf-8'))
+            logger.info(f"✅ {len(self.offers)} offres chargées")
             
             self.data_loaded = True
-            logger.info(f"📈 {len(self.offers)} offres chargées")
+            logger.info("🎉 Toutes les données sont chargées!")
             return True
             
+        except requests.exceptions.Timeout:
+            logger.error("❌ Timeout lors du téléchargement des fichiers")
+            return False
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"❌ Erreur HTTP: {e}")
+            return False
         except Exception as e:
             logger.error(f"❌ Erreur lors du chargement: {e}")
             logger.error(traceback.format_exc())
             return False
 
-data_store = DataStore()
-
 # =======================
-# Hugging Face Embeddings
-# =======================
-def get_embedding(text: str):
-    """Fonction pour générer les embeddings avec Hugging Face"""
-    # Votre code existant pour Hugging Face...
-    pass
-
-# =======================
-# Routes FastAPI
+# Routes FastAPI (inchangées)
 # =======================
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     if not data_store.data_loaded:
-        await data_store.load_data()
+        success = await data_store.load_data()
+        if not success:
+            return templates.TemplateResponse("error.html", {
+                "request": request,
+                "message": "Impossible de charger les données. Veuillez réessayer."
+            })
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/api/search")
 async def search_offers(request: Request):
     try:
-        if not data_store.data_loaded and not await data_store.load_data():
-            raise HTTPException(status_code=500, detail="Erreur lors du chargement des données")
+        if not data_store.data_loaded:
+            success = await data_store.load_data()
+            if not success:
+                raise HTTPException(status_code=500, detail="Erreur lors du chargement des données")
 
         data = await request.json()
         prompt = data.get("prompt", "")
@@ -172,3 +182,9 @@ async def health_check():
         "offers_count": len(data_store.offers) if data_store.data_loaded else 0
     })
 
+# =======================
+# Page d'erreur simple
+# =======================
+@app.get("/error")
+async def error_page(request: Request):
+    return templates.TemplateResponse("error.html", {"request": request})
