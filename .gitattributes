@@ -1,0 +1,2 @@
+embedding_compressed.npz filter=lfs diff=lfs merge=lfs -text
+jobs_catalogue2.json.gz filter=lfs diff=lfs merge=lfs -text
