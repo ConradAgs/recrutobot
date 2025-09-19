@@ -10,6 +10,8 @@ import requests
 from pathlib import Path
 import tempfile
 import gzip
+from huggingface_hub import InferenceClient
+
 
 # =======================
 # Configuration du logging
@@ -224,3 +226,4 @@ async def debug():
         "offers_count": len(data_store.offers) if data_store.data_loaded else 0,
         "embeddings_shape": data_store.offers_emb.shape if data_store.offers_emb is not None else None
     })
+
