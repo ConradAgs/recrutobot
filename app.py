@@ -44,7 +44,7 @@ class DataStore:
             
             # URLs de vos fichiers dans le Blob Store
             # Remplacez par les URLs réelles de vos fichiers
-            BLOB_BASE_URL = "https://<votre-url-blob>.blob.vercel-storage.com"
+            BLOB_BASE_URL = "https://api.vercel.com/v2/blob/upload-url"
             
             # 1. Charger les embeddings compressés
             logger.info("🧠 Chargement des embeddings...")
@@ -171,3 +171,4 @@ async def health_check():
         "data_loaded": data_store.data_loaded,
         "offers_count": len(data_store.offers) if data_store.data_loaded else 0
     })
+
