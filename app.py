@@ -11,7 +11,8 @@ from pathlib import Path
 import tempfile
 import gzip
 from huggingface_hub import InferenceClient
-
+import hashlib
+import pathlib
 
 # =======================
 # Configuration du logging
@@ -84,41 +85,68 @@ class DataStore:
         self.offers = []
         self.offers_emb = None
         self.data_loaded = False
+        self.cache_dir = pathlib.Path("/tmp/datastore")
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_cache_path(self, name: str) -> pathlib.Path:
+        return self.cache_dir / name
 
     async def load_data(self):
         if self.data_loaded:
             return True
-        
+
         try:
-            logger.info("📥 Chargement depuis Vercel Blob Store...")
-            
+            logger.info("📥 Chargement depuis cache ou Blob Store...")
+
+            # ===============================
             # 1. Charger les embeddings
-            logger.info("🧠 Téléchargement des embeddings...")
-            emb_response = requests.get(BLOB_FILE_URLS["embeddings"], timeout=120)
-            emb_response.raise_for_status()
-            
-            # Sauvegarder temporairement
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.npz') as f:
-                f.write(emb_response.content)
-                tmp_path = f.name
-            
-            # Charger le NPZ
-            data = np.load(tmp_path)
-            self.offers_emb = data['embeddings'].astype(np.float32)
-            os.unlink(tmp_path)
-            
+            # ===============================
+            emb_path = self._get_cache_path("embeddings_compressed.npz")
+
+            if not emb_path.exists():
+                logger.info("🧠 Téléchargement des embeddings...")
+                emb_response = requests.get(BLOB_FILE_URLS["embeddings"], timeout=120)
+                emb_response.raise_for_status()
+
+                # Sauvegarde compressée
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.npz') as f:
+                    f.write(emb_response.content)
+                    tmp_path = f.name
+
+                data = np.load(tmp_path)
+                os.unlink(tmp_path)
+
+                # Sauvegarde compressée localement
+                np.savez_compressed(emb_path, embeddings=data['embeddings'].astype(np.float32))
+                logger.info(f"💾 Embeddings sauvegardés en cache ({emb_path})")
+
+            # Charger depuis cache compressé
+            self.offers_emb = np.load(emb_path)['embeddings']
+            logger.info(f"✅ Embeddings chargés ({self.offers_emb.shape})")
+
+            # ===============================
             # 2. Charger les offres
-            logger.info("📋 Téléchargement des offres...")
-            json_response = requests.get(BLOB_FILE_URLS["offers"], timeout=60)
-            json_response.raise_for_status()
-            
-            # Décompresser
-            self.offers = json.loads(gzip.decompress(json_response.content).decode('utf-8'))
-            
-            self.data_loaded = True
+            # ===============================
+            offers_path = self._get_cache_path("offers.json.gz")
+
+            if not offers_path.exists():
+                logger.info("📋 Téléchargement des offres...")
+                json_response = requests.get(BLOB_FILE_URLS["offers"], timeout=60)
+                json_response.raise_for_status()
+
+                with open(offers_path, "wb") as f:
+                    f.write(json_response.content)
+                logger.info("💾 Offres sauvegardées en cache")
+
+            # Charger depuis cache
+            with gzip.open(offers_path, "rb") as f:
+                self.offers = json.loads(f.read().decode('utf-8'))
+
             logger.info(f"✅ {len(self.offers)} offres chargées")
+
+            self.data_loaded = True
             return True
-            
+
         except Exception as e:
             logger.error(f"❌ Erreur load_data: {e}")
             logger.error(traceback.format_exc())
@@ -226,4 +254,5 @@ async def debug():
         "offers_count": len(data_store.offers) if data_store.data_loaded else 0,
         "embeddings_shape": data_store.offers_emb.shape if data_store.offers_emb is not None else None
     })
+
 
