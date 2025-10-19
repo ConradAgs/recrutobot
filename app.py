@@ -11,8 +11,7 @@ from pathlib import Path
 import tempfile
 import gzip
 from huggingface_hub import InferenceClient
-import hashlib
-import pathlib
+import asyncio
 
 # =======================
 # Configuration du logging
@@ -57,7 +56,6 @@ def get_embedding(text: str):
         raise HTTPException(status_code=500, detail="Token Hugging Face non configuré")
     
     try:
-        from huggingface_hub import InferenceClient
         client = InferenceClient(token=HF_API_TOKEN)
         
         embeddings = client.feature_extraction(
@@ -78,81 +76,71 @@ def get_embedding(text: str):
         raise HTTPException(status_code=500, detail=f"Erreur génération embedding: {e}")
 
 # =======================
-# DataStore
+# DataStore amélioré avec cache
 # =======================
 class DataStore:
     def __init__(self):
         self.offers = []
         self.offers_emb = None
         self.data_loaded = False
-        self.cache_dir = pathlib.Path("/tmp/datastore")
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-
-    def _get_cache_path(self, name: str) -> pathlib.Path:
-        return self.cache_dir / name
+        self._loading = False
+        self._load_lock = asyncio.Lock()
 
     async def load_data(self):
-        if self.data_loaded:
-            return True
-
-        try:
-            logger.info("📥 Chargement depuis cache ou Blob Store...")
-
-            # ===============================
-            # 1. Charger les embeddings
-            # ===============================
-            emb_path = self._get_cache_path("embeddings_compressed.npz")
-
-            if not emb_path.exists():
+        # Éviter les chargements multiples simultanés
+        async with self._load_lock:
+            if self.data_loaded or self._loading:
+                return True
+            
+            self._loading = True
+            try:
+                logger.info("📥 Chargement depuis Vercel Blob Store...")
+                
+                # 1. Charger les embeddings
                 logger.info("🧠 Téléchargement des embeddings...")
                 emb_response = requests.get(BLOB_FILE_URLS["embeddings"], timeout=120)
                 emb_response.raise_for_status()
-
-                # Sauvegarde compressée
+                
+                # Sauvegarder temporairement
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.npz') as f:
                     f.write(emb_response.content)
                     tmp_path = f.name
-
+                
+                # Charger le NPZ
                 data = np.load(tmp_path)
+                self.offers_emb = data['embeddings'].astype(np.float32)
                 os.unlink(tmp_path)
-
-                # Sauvegarde compressée localement
-                np.savez_compressed(emb_path, embeddings=data['embeddings'].astype(np.float32))
-                logger.info(f"💾 Embeddings sauvegardés en cache ({emb_path})")
-
-            # Charger depuis cache compressé
-            self.offers_emb = np.load(emb_path)['embeddings']
-            logger.info(f"✅ Embeddings chargés ({self.offers_emb.shape})")
-
-            # ===============================
-            # 2. Charger les offres
-            # ===============================
-            offers_path = self._get_cache_path("offers.json.gz")
-
-            if not offers_path.exists():
+                
+                # 2. Charger les offres
                 logger.info("📋 Téléchargement des offres...")
                 json_response = requests.get(BLOB_FILE_URLS["offers"], timeout=60)
                 json_response.raise_for_status()
-
-                with open(offers_path, "wb") as f:
-                    f.write(json_response.content)
-                logger.info("💾 Offres sauvegardées en cache")
-
-            # Charger depuis cache
-            with gzip.open(offers_path, "rb") as f:
-                self.offers = json.loads(f.read().decode('utf-8'))
-
-            logger.info(f"✅ {len(self.offers)} offres chargées")
-
-            self.data_loaded = True
-            return True
-
-        except Exception as e:
-            logger.error(f"❌ Erreur load_data: {e}")
-            logger.error(traceback.format_exc())
-            return False
+                
+                # Décompresser
+                self.offers = json.loads(gzip.decompress(json_response.content).decode('utf-8'))
+                
+                self.data_loaded = True
+                logger.info(f"✅ {len(self.offers)} offres chargées")
+                return True
+                
+            except Exception as e:
+                logger.error(f"❌ Erreur load_data: {e}")
+                logger.error(traceback.format_exc())
+                self._loading = False
+                return False
+            finally:
+                self._loading = False
 
 data_store = DataStore()
+
+# =======================
+# Chargement au démarrage
+# =======================
+@app.on_event("startup")
+async def startup_event():
+    """Charge les données au démarrage de l'application"""
+    logger.info("🚀 Démarrage de l'application - Chargement des données...")
+    await data_store.load_data()
 
 # =======================
 # Routes FastAPI
@@ -160,27 +148,32 @@ data_store = DataStore()
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     try:
+        # Vérifier si les données sont chargées, sinon essayer de charger
         if not data_store.data_loaded:
             success = await data_store.load_data()
             if not success:
-                return HTMLResponse("""
-                    <html><body>
-                    <h1>Erreur de chargement</h1>
-                    <p>Impossible de charger les données. Réessayez plus tard.</p>
-                    </body></html>
-                """)
+                return templates.TemplateResponse("error.html", {
+                    "request": request,
+                    "error": "Données temporairement indisponibles. Réessayez dans quelques instants."
+                })
+        
         return templates.TemplateResponse("index.html", {"request": request})
     except Exception as e:
         logger.error(f"Erreur read_root: {e}")
-        return HTMLResponse(f"<h1>Erreur: {str(e)}</h1>")
+        return templates.TemplateResponse("error.html", {
+            "request": request,
+            "error": f"Erreur technique: {str(e)}"
+        })
 
 @app.post("/api/search")
 async def search_offers(request: Request):
     try:
+        # NE PAS recharger les données à chaque requête
         if not data_store.data_loaded:
+            # Si les données ne sont pas chargées, essayer une fois
             success = await data_store.load_data()
             if not success:
-                raise HTTPException(status_code=500, detail="Données non chargées")
+                raise HTTPException(status_code=503, detail="Service temporairement indisponible")
 
         data = await request.json()
         prompt = data.get("prompt", "")
@@ -227,7 +220,7 @@ async def search_offers(request: Request):
         results.sort(key=lambda x: x["score"], reverse=True)
         
         return JSONResponse({
-            "results": results[:20],  # Limiter à 20 résultats
+            "results": results[:20],
             "message": f"{len(results)} offres trouvées pour '{prompt}'",
             "count": len(results),
             "search_term": prompt
@@ -245,7 +238,16 @@ async def health_check():
         "offers_count": len(data_store.offers) if data_store.data_loaded else 0
     })
 
-# Route pour debug
+@app.get("/reload-data")
+async def reload_data():
+    """Endpoint manuel pour recharger les données si nécessaire"""
+    success = await data_store.load_data()
+    return JSONResponse({
+        "success": success,
+        "message": "Rechargement des données effectué" if success else "Erreur lors du rechargement",
+        "offers_count": len(data_store.offers) if data_store.data_loaded else 0
+    })
+
 @app.get("/debug")
 async def debug():
     return JSONResponse({
@@ -254,5 +256,3 @@ async def debug():
         "offers_count": len(data_store.offers) if data_store.data_loaded else 0,
         "embeddings_shape": data_store.offers_emb.shape if data_store.offers_emb is not None else None
     })
-
-
