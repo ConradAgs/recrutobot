@@ -42,10 +42,16 @@ app = FastAPI(title="RecrutoBot", description="Avec Vercel Blob Storage")
 try:
     templates_path = Path(__file__).parent / "templates"
     templates = Jinja2Templates(directory=str(templates_path))
+    logger.info(f"✅ Templates chargés depuis: {templates_path}")
 except Exception as e:
-    logger.error(f"Erreur templates: {e}")
+    logger.error(f"❌ Erreur templates: {e}")
     # Fallback pour Vercel
-    templates = Jinja2Templates(directory="templates")
+    try:
+        templates = Jinja2Templates(directory="templates")
+        logger.info("✅ Templates chargés depuis dossier 'templates'")
+    except:
+        logger.error("❌ Aucun template trouvé")
+        templates = None
 
 # =======================
 # Hugging Face Embeddings
@@ -148,22 +154,79 @@ async def startup_event():
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     try:
-        # Vérifier si les données sont chargées, sinon essayer de charger
+        # Vérifier si les données sont chargées
         if not data_store.data_loaded:
             success = await data_store.load_data()
             if not success:
-                return templates.TemplateResponse("error.html", {
-                    "request": request,
-                    "error": "Données temporairement indisponibles. Réessayez dans quelques instants."
-                })
+                # Retourner une page HTML simple sans template
+                return HTMLResponse("""
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>RecrutoBot - Erreur</title>
+                        <style>
+                            body { font-family: Arial, sans-serif; margin: 40px; text-align: center; }
+                            .error { color: #d32f2f; background: #ffebee; padding: 20px; border-radius: 5px; }
+                        </style>
+                    </head>
+                    <body>
+                        <h1>RecrutoBot</h1>
+                        <div class="error">
+                            <h2>Service temporairement indisponible</h2>
+                            <p>Les données sont en cours de chargement. Réessayez dans quelques instants.</p>
+                        </div>
+                    </body>
+                    </html>
+                """)
         
-        return templates.TemplateResponse("index.html", {"request": request})
+        # Si les templates sont disponibles
+        if templates:
+            return templates.TemplateResponse("index.html", {"request": request})
+        else:
+            # Fallback si pas de templates
+            return HTMLResponse("""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>RecrutoBot</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; margin: 40px; }
+                        .container { max-width: 800px; margin: 0 auto; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1>RecrutoBot</h1>
+                        <p>Application de recherche d'offres d'emploi</p>
+                        <p>✅ Données chargées avec succès</p>
+                        <p>Utilisez l'API <code>/api/search</code> pour effectuer des recherches.</p>
+                    </div>
+                </body>
+                </html>
+            """)
+            
     except Exception as e:
         logger.error(f"Erreur read_root: {e}")
-        return templates.TemplateResponse("error.html", {
-            "request": request,
-            "error": f"Erreur technique: {str(e)}"
-        })
+        # Retourner une erreur HTML simple
+        return HTMLResponse(f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>RecrutoBot - Erreur</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; margin: 40px; text-align: center; }}
+                    .error {{ color: #d32f2f; background: #ffebee; padding: 20px; border-radius: 5px; }}
+                </style>
+            </head>
+            <body>
+                <h1>RecrutoBot</h1>
+                <div class="error">
+                    <h2>Erreur technique</h2>
+                    <p>{str(e)}</p>
+                </div>
+            </body>
+            </html>
+        """, status_code=500)
 
 @app.post("/api/search")
 async def search_offers(request: Request):
@@ -256,3 +319,12 @@ async def debug():
         "offers_count": len(data_store.offers) if data_store.data_loaded else 0,
         "embeddings_shape": data_store.offers_emb.shape if data_store.offers_emb is not None else None
     })
+
+# Route pour les favicon manquants (éviter les erreurs 404)
+@app.get("/favicon.ico")
+async def favicon():
+    return JSONResponse({"status": "no favicon"})
+
+@app.get("/favicon.png")
+async def favicon_png():
+    return JSONResponse({"status": "no favicon"})
