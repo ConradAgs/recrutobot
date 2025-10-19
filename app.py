@@ -7,51 +7,25 @@ import os
 import traceback
 import logging
 import requests
-from pathlib import Path
-import tempfile
-import gzip
 from huggingface_hub import InferenceClient
 import asyncio
 
 # =======================
-# Configuration du logging
+# Configuration
 # =======================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# =======================
-# URLs des fichiers Blob
-# =======================
-BLOB_FILE_URLS = {
-    "embeddings": "https://a76pgx7uu8agygvt.public.blob.vercel-storage.com/embedding_compressed.npz",
-    "offers": "https://a76pgx7uu8agygvt.public.blob.vercel-storage.com/jobs_catalogue2.json.gz"
-}
-
-# =======================
-# Clé Hugging Face
-# =======================
 HF_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
 HF_MODEL = "sentence-transformers/all-mpnet-base-v2"
 
-# =======================
-# Application FastAPI
-# =======================
-app = FastAPI(title="RecrutoBot", description="Avec Vercel Blob Storage")
+app = FastAPI(title="RecrutoBot", description="Version d'urgence")
 
 # Configuration des templates
 try:
-    templates_path = Path(__file__).parent / "templates"
-    templates = Jinja2Templates(directory=str(templates_path))
-    logger.info(f"✅ Templates chargés depuis: {templates_path}")
-except Exception as e:
-    logger.error(f"❌ Erreur templates: {e}")
-    # Fallback pour Vercel
-    try:
-        templates = Jinja2Templates(directory="templates")
-        logger.info("✅ Templates chargés depuis dossier 'templates'")
-    except:
-        logger.error("❌ Aucun template trouvé")
-        templates = None
+    templates = Jinja2Templates(directory="templates")
+except:
+    templates = None
 
 # =======================
 # Hugging Face Embeddings
@@ -63,12 +37,7 @@ def get_embedding(text: str):
     
     try:
         client = InferenceClient(token=HF_API_TOKEN)
-        
-        embeddings = client.feature_extraction(
-            text,
-            model=HF_MODEL
-        )
-        
+        embeddings = client.feature_extraction(text, model=HF_MODEL)
         emb = np.array(embeddings, dtype=np.float32)
         
         if emb.ndim == 2:
@@ -82,60 +51,57 @@ def get_embedding(text: str):
         raise HTTPException(status_code=500, detail=f"Erreur génération embedding: {e}")
 
 # =======================
-# DataStore amélioré avec cache
+# DataStore minimaliste
 # =======================
 class DataStore:
     def __init__(self):
         self.offers = []
         self.offers_emb = None
         self.data_loaded = False
-        self._loading = False
-        self._load_lock = asyncio.Lock()
 
-    async def load_data(self):
-        # Éviter les chargements multiples simultanés
-        async with self._load_lock:
-            if self.data_loaded or self._loading:
-                return True
+    async def load_sample_data(self):
+        """Charge des données d'exemple sans blob storage"""
+        try:
+            logger.info("📥 Chargement des données d'exemple...")
             
-            self._loading = True
-            try:
-                logger.info("📥 Chargement depuis Vercel Blob Store...")
-                
-                # 1. Charger les embeddings
-                logger.info("🧠 Téléchargement des embeddings...")
-                emb_response = requests.get(BLOB_FILE_URLS["embeddings"], timeout=120)
-                emb_response.raise_for_status()
-                
-                # Sauvegarder temporairement
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.npz') as f:
-                    f.write(emb_response.content)
-                    tmp_path = f.name
-                
-                # Charger le NPZ
-                data = np.load(tmp_path)
-                self.offers_emb = data['embeddings'].astype(np.float32)
-                os.unlink(tmp_path)
-                
-                # 2. Charger les offres
-                logger.info("📋 Téléchargement des offres...")
-                json_response = requests.get(BLOB_FILE_URLS["offers"], timeout=60)
-                json_response.raise_for_status()
-                
-                # Décompresser
-                self.offers = json.loads(gzip.decompress(json_response.content).decode('utf-8'))
-                
-                self.data_loaded = True
-                logger.info(f"✅ {len(self.offers)} offres chargées")
-                return True
-                
-            except Exception as e:
-                logger.error(f"❌ Erreur load_data: {e}")
-                logger.error(traceback.format_exc())
-                self._loading = False
-                return False
-            finally:
-                self._loading = False
+            # Créer des données d'exemple minimales
+            self.offers = [
+                {
+                    "id": "1",
+                    "intitule": "Développeur Python",
+                    "description": "Développement d'applications web avec Python et FastAPI",
+                    "lieuTravail": {"libelle": "Paris"},
+                    "typeContrat": "CDI",
+                    "typeContratLibelle": "CDI",
+                    "experienceLibelle": "Débutant accepté",
+                    "salaire": {"libelle": "35-40k"},
+                    "entreprise": {"nom": "TechCorp"},
+                    "origineOffre": {"url": "#"}
+                },
+                {
+                    "id": "2", 
+                    "intitule": "Data Scientist",
+                    "description": "Analyse de données et machine learning",
+                    "lieuTravail": {"libelle": "Lyon"},
+                    "typeContrat": "CDI",
+                    "typeContratLibelle": "CDI", 
+                    "experienceLibelle": "Expérimenté",
+                    "salaire": {"libelle": "45-50k"},
+                    "entreprise": {"nom": "DataCompany"},
+                    "origineOffre": {"url": "#"}
+                }
+            ]
+            
+            # Créer des embeddings factices pour la démo
+            self.offers_emb = np.random.randn(len(self.offers), 768).astype(np.float32)
+            
+            self.data_loaded = True
+            logger.info(f"✅ {len(self.offers)} offres d'exemple chargées")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur load_sample_data: {e}")
+            return False
 
 data_store = DataStore()
 
@@ -144,9 +110,9 @@ data_store = DataStore()
 # =======================
 @app.on_event("startup")
 async def startup_event():
-    """Charge les données au démarrage de l'application"""
-    logger.info("🚀 Démarrage de l'application - Chargement des données...")
-    await data_store.load_data()
+    """Charge les données d'exemple au démarrage"""
+    logger.info("🚀 Démarrage - Chargement données d'exemple...")
+    await data_store.load_sample_data()
 
 # =======================
 # Routes FastAPI
@@ -154,36 +120,12 @@ async def startup_event():
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     try:
-        # Vérifier si les données sont chargées
         if not data_store.data_loaded:
-            success = await data_store.load_data()
-            if not success:
-                # Retourner une page HTML simple sans template
-                return HTMLResponse("""
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                        <title>RecrutoBot - Erreur</title>
-                        <style>
-                            body { font-family: Arial, sans-serif; margin: 40px; text-align: center; }
-                            .error { color: #d32f2f; background: #ffebee; padding: 20px; border-radius: 5px; }
-                        </style>
-                    </head>
-                    <body>
-                        <h1>RecrutoBot</h1>
-                        <div class="error">
-                            <h2>Service temporairement indisponible</h2>
-                            <p>Les données sont en cours de chargement. Réessayez dans quelques instants.</p>
-                        </div>
-                    </body>
-                    </html>
-                """)
-        
-        # Si les templates sont disponibles
+            await data_store.load_sample_data()
+            
         if templates:
             return templates.TemplateResponse("index.html", {"request": request})
         else:
-            # Fallback si pas de templates
             return HTMLResponse("""
                 <!DOCTYPE html>
                 <html>
@@ -192,14 +134,61 @@ async def read_root(request: Request):
                     <style>
                         body { font-family: Arial, sans-serif; margin: 40px; }
                         .container { max-width: 800px; margin: 0 auto; }
+                        .search-box { margin: 20px 0; }
+                        input[type="text"] { width: 300px; padding: 10px; }
+                        button { padding: 10px 20px; background: #007acc; color: white; border: none; cursor: pointer; }
                     </style>
                 </head>
                 <body>
                     <div class="container">
-                        <h1>RecrutoBot</h1>
-                        <p>Application de recherche d'offres d'emploi</p>
-                        <p>✅ Données chargées avec succès</p>
-                        <p>Utilisez l'API <code>/api/search</code> pour effectuer des recherches.</p>
+                        <h1>🔍 RecrutoBot</h1>
+                        <p><strong>Mode démonstration</strong> - Recherche d'offres d'emploi</p>
+                        
+                        <div class="search-box">
+                            <input type="text" id="searchInput" placeholder="Ex: Développeur Python à Paris...">
+                            <button onclick="search()">Rechercher</button>
+                        </div>
+                        
+                        <div id="results"></div>
+                        
+                        <script>
+                            async function search() {
+                                const prompt = document.getElementById('searchInput').value;
+                                if (!prompt) return;
+                                
+                                const response = await fetch('/api/search', {
+                                    method: 'POST',
+                                    headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({prompt: prompt})
+                                });
+                                
+                                const data = await response.json();
+                                displayResults(data);
+                            }
+                            
+                            function displayResults(data) {
+                                const resultsDiv = document.getElementById('results');
+                                if (data.results.length === 0) {
+                                    resultsDiv.innerHTML = '<p>Aucune offre trouvée. Essayez d\'autres termes.</p>';
+                                    return;
+                                }
+                                
+                                let html = `<h3>${data.message}</h3>`;
+                                data.results.forEach(offer => {
+                                    html += `
+                                        <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 5px;">
+                                            <h4>${offer.intitule}</h4>
+                                            <p>${offer.description}</p>
+                                            <p><strong>Lieu:</strong> ${offer.lieuTravail.libelle}</p>
+                                            <p><strong>Contrat:</strong> ${offer.typeContratLibelle}</p>
+                                            <p><strong>Entreprise:</strong> ${offer.entreprise.nom}</p>
+                                            <p><strong>Score:</strong> ${(offer.score * 100).toFixed(1)}%</p>
+                                        </div>
+                                    `;
+                                });
+                                resultsDiv.innerHTML = html;
+                            }
+                        </script>
                     </div>
                 </body>
                 </html>
@@ -207,36 +196,18 @@ async def read_root(request: Request):
             
     except Exception as e:
         logger.error(f"Erreur read_root: {e}")
-        # Retourner une erreur HTML simple
         return HTMLResponse(f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>RecrutoBot - Erreur</title>
-                <style>
-                    body {{ font-family: Arial, sans-serif; margin: 40px; text-align: center; }}
-                    .error {{ color: #d32f2f; background: #ffebee; padding: 20px; border-radius: 5px; }}
-                </style>
-            </head>
-            <body>
+            <html><body>
                 <h1>RecrutoBot</h1>
-                <div class="error">
-                    <h2>Erreur technique</h2>
-                    <p>{str(e)}</p>
-                </div>
-            </body>
-            </html>
-        """, status_code=500)
+                <p>Erreur: {str(e)}</p>
+            </body></html>
+        """)
 
 @app.post("/api/search")
 async def search_offers(request: Request):
     try:
-        # NE PAS recharger les données à chaque requête
         if not data_store.data_loaded:
-            # Si les données ne sont pas chargées, essayer une fois
-            success = await data_store.load_data()
-            if not success:
-                raise HTTPException(status_code=503, detail="Service temporairement indisponible")
+            await data_store.load_sample_data()
 
         data = await request.json()
         prompt = data.get("prompt", "")
@@ -248,20 +219,12 @@ async def search_offers(request: Request):
         if data_store.offers_emb is None:
             raise HTTPException(status_code=500, detail="Embeddings manquants")
 
-        # Similarité cosinus
+        # Similarité cosinus avec données d'exemple
         norms = np.linalg.norm(data_store.offers_emb, axis=1)
         query_norm = np.linalg.norm(query_emb)
         cos_scores = np.dot(data_store.offers_emb, query_emb) / (norms * query_norm)
 
-        good_indices = np.where(cos_scores > 0.3)[0]
-
-        if len(good_indices) == 0:
-            return JSONResponse({
-                "results": [],
-                "message": "Aucune offre trouvée. Reformulez votre recherche.",
-                "count": 0,
-                "search_term": prompt
-            })
+        good_indices = np.where(cos_scores > 0.1)[0]  # Seuil plus bas pour la démo
 
         results = []
         for i in good_indices:
@@ -269,7 +232,7 @@ async def search_offers(request: Request):
             results.append({
                 "id": offer.get("id", ""),
                 "intitule": offer.get("intitule", "Titre non disponible"),
-                "description": offer.get("description", "Description non disponible")[:250] + "...",
+                "description": offer.get("description", "Description non disponible"),
                 "lieuTravail": offer.get("lieuTravail", {}),
                 "typeContrat": offer.get("typeContrat", ""),
                 "typeContratLibelle": offer.get("typeContratLibelle", ""),
@@ -283,10 +246,11 @@ async def search_offers(request: Request):
         results.sort(key=lambda x: x["score"], reverse=True)
         
         return JSONResponse({
-            "results": results[:20],
-            "message": f"{len(results)} offres trouvées pour '{prompt}'",
+            "results": results,
+            "message": f"{len(results)} offres trouvées pour '{prompt}'" if results else "Aucune offre exacte trouvée. Voici les offres disponibles:",
             "count": len(results),
-            "search_term": prompt
+            "search_term": prompt,
+            "demo_mode": True
         })
 
     except Exception as e:
@@ -296,35 +260,12 @@ async def search_offers(request: Request):
 @app.get("/health")
 async def health_check():
     return JSONResponse({
-        "status": "ok",
-        "data_loaded": data_store.data_loaded,
-        "offers_count": len(data_store.offers) if data_store.data_loaded else 0
-    })
-
-@app.get("/reload-data")
-async def reload_data():
-    """Endpoint manuel pour recharger les données si nécessaire"""
-    success = await data_store.load_data()
-    return JSONResponse({
-        "success": success,
-        "message": "Rechargement des données effectué" if success else "Erreur lors du rechargement",
-        "offers_count": len(data_store.offers) if data_store.data_loaded else 0
-    })
-
-@app.get("/debug")
-async def debug():
-    return JSONResponse({
-        "blob_urls": BLOB_FILE_URLS,
+        "status": "ok", 
         "data_loaded": data_store.data_loaded,
         "offers_count": len(data_store.offers) if data_store.data_loaded else 0,
-        "embeddings_shape": data_store.offers_emb.shape if data_store.offers_emb is not None else None
+        "demo_mode": True
     })
 
-# Route pour les favicon manquants (éviter les erreurs 404)
 @app.get("/favicon.ico")
 async def favicon():
-    return JSONResponse({"status": "no favicon"})
-
-@app.get("/favicon.png")
-async def favicon_png():
     return JSONResponse({"status": "no favicon"})
