@@ -30,7 +30,7 @@ BLOB_FILE_URLS = {
 HF_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
 HF_MODEL = "sentence-transformers/all-mpnet-base-v2"
 
-app = FastAPI(title="RecrutoBot")
+app = FastAPI(title="RecrutoBot", description="Avec vraies données exclusivement")
 
 try:
     templates = Jinja2Templates(directory="templates")
@@ -60,7 +60,7 @@ def get_embedding(text: str):
         raise HTTPException(status_code=500, detail=f"Erreur génération embedding: {e}")
 
 # =======================
-# DataStore optimisé
+# DataStore
 # =======================
 class DataStore:
     def __init__(self):
